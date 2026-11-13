@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Evaluador de Rúbricas</title>
+  <title>Evaluador Inteligente de Rúbricas</title>
   <style>
     :root {
       --bg-page: #fdf8fa;
@@ -45,7 +45,6 @@
       margin: 0 auto;
     }
 
-    /* Encabezado */
     header {
       background: linear-gradient(135deg, #ffffff 0%, #fdf2f8 100%);
       border: 1px solid var(--border-color);
@@ -92,7 +91,6 @@
       border-radius: 50%;
     }
 
-    /* Tarjetas del formulario */
     .card {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
@@ -138,7 +136,6 @@
       margin-bottom: 0.85rem;
     }
 
-    /* Zonas de carga de archivos */
     .dropzone {
       border: 2px dashed var(--pink-pastel);
       background-color: #fffafd;
@@ -178,7 +175,6 @@
       word-break: break-all;
     }
 
-    /* Input URL de GitHub */
     .input-group {
       margin-top: 1rem;
       padding-top: 1rem;
@@ -209,7 +205,6 @@
       background-color: #ffffff;
     }
 
-    /* Botón principal */
     .btn-row {
       display: flex;
       gap: 0.75rem;
@@ -257,7 +252,6 @@
       background-color: #fbcfe8;
     }
 
-    /* Spinner de carga */
     .loader-box {
       display: none;
       align-items: center;
@@ -285,7 +279,6 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Caja de error */
     .error-box {
       display: none;
       background-color: var(--danger-bg);
@@ -298,7 +291,6 @@
       font-weight: 500;
     }
 
-    /* Sección de Resultados */
     #resultadosSection {
       display: none;
     }
@@ -347,7 +339,6 @@
       transition: width 0.6s ease;
     }
 
-    /* Tabla de Criterios */
     .table-wrapper {
       overflow-x: auto;
       border: 1px solid var(--border-color);
@@ -451,9 +442,9 @@
         <h1>Evaluador Inteligente de Rúbricas</h1>
         <p>Audita tus reportes (.docx / .pdf) y repositorios de código antes de entregar</p>
       </div>
-      <div class="api-badge">
+      <div class="api-badge" id="apiBadge">
         <span class="api-dot"></span>
-        API: localhost:8000
+        API: Conectando...
       </div>
     </header>
 
@@ -515,7 +506,7 @@
         <div class="spinner"></div>
         <div>
           <strong>Analizando rúbrica y revisando tu entrega...</strong><br />
-          <span style="font-size: 0.85rem;">Esto puede tomar entre 10 y 25 segundos según el tamaño de tu proyecto.</span>
+          <span style="font-size: 0.85rem;">Esto puede tomar entre 15 y 35 segundos según el tamaño de tu proyecto.</span>
         </div>
       </div>
 
@@ -576,9 +567,22 @@
   </div>
 
   <script>
-    const API_URL = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.protocol === "file:")
-  ? "http://127.0.0.1:8000/api/v1/evaluar"
-  : "/api/v1/evaluar";
+    // Detecta automáticamente si estás probando en tu PC o desplegado en Render
+    const esArchivoLocal = window.location.protocol === "file:";
+    const esLocalhost = ["127.0.0.1", "localhost", ""].includes(window.location.hostname);
+
+    // Si lo abres con doble clic (file://) o en otro puerto local (como Live Server), apunta a 127.0.0.1:8000.
+    // Si estás dentro del servidor de FastAPI o en Render, usa la ruta relativa "/api/v1/evaluar".
+    const API_URL = (esArchivoLocal || (esLocalhost && window.location.port !== "8000"))
+      ? "http://127.0.0.1:8000/api/v1/evaluar"
+      : "/api/v1/evaluar";
+
+    const apiBadge = document.getElementById("apiBadge");
+    if (apiBadge) {
+      apiBadge.innerHTML = `<span class="api-dot"></span> ${
+        esArchivoLocal || esLocalhost ? "API: localhost:8000" : "API: Render Cloud"
+      }`;
+    }
 
     const form = document.getElementById("formEvaluador");
     const rubricaInput = document.getElementById("rubricaInput");
@@ -592,7 +596,6 @@
     const errorBox = document.getElementById("errorBox");
     const resultadosSection = document.getElementById("resultadosSection");
 
-    // Mostrar nombres de archivos seleccionados
     rubricaInput.addEventListener("change", () => {
       rubricaNombre.textContent = rubricaInput.files[0]
         ? `Seleccionado: ${rubricaInput.files[0].name}`
@@ -605,7 +608,6 @@
         : "Ningún archivo seleccionado";
     });
 
-    // Limpiar formulario
     btnLimpiar.addEventListener("click", () => {
       form.reset();
       rubricaNombre.textContent = "Ningún archivo seleccionado";
@@ -614,7 +616,6 @@
       resultadosSection.style.display = "none";
     });
 
-    // Función para asignar color según el estado del criterio
     function obtenerClaseEstado(estado) {
       const texto = (estado || "").toLowerCase();
       if (texto.includes("totalmente")) return "status-ok";
@@ -622,7 +623,6 @@
       return "status-fail";
     }
 
-    // Envío del formulario a FastAPI
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       errorBox.style.display = "none";
@@ -641,7 +641,6 @@
         return;
       }
 
-      // Construimos el FormData solo con los campos que sí tienen contenido
       const formData = new FormData();
       formData.append("rubrica_pdf", archivoRubrica);
 
@@ -663,17 +662,27 @@
           body: formData,
         });
 
-        const datos = await respuesta.json();
+        // Leemos como texto primero para capturar errores HTML (502/504/404) sin romper JSON.parse
+        const textoCrudo = await respuesta.text();
+        let datos;
+        try {
+          datos = JSON.parse(textoCrudo);
+        } catch {
+          throw new Error(
+            `El servidor devolvió una respuesta no válida (Código HTTP ${respuesta.status}). ` +
+            `Si estás en Render, espera unos segundos y vuelve a intentar; si estás en tu PC, verifica que Uvicorn esté corriendo en el puerto 8000.`
+          );
+        }
 
         if (!respuesta.ok) {
-          throw new Error(datos.detail || "Ocurrió un error al evaluar la entrega.");
+          throw new Error(datos.detail || `Error del servidor (Código ${respuesta.status})`);
         }
 
         renderizarResultados(datos);
       } catch (err) {
         mostrarError(
           err.message === "Failed to fetch"
-            ? "No se pudo conectar con http://127.0.0.1:8000. Verifica que tu servidor FastAPI esté encendido con uvicorn."
+            ? "No se pudo conectar con el servidor FastAPI. Si estás en tu PC, asegúrate de haber ejecutado: uvicorn main:app --reload --port 8000"
             : err.message
         );
       } finally {
@@ -696,7 +705,6 @@
       document.getElementById("resumenTexto").textContent = dictamen.resumen_general || "";
       document.getElementById("barraProgreso").style.width = `${porcentaje}%`;
 
-      // Llenar tabla de criterios
       const tbody = document.getElementById("tablaCriteriosBody");
       tbody.innerHTML = "";
 
@@ -714,7 +722,6 @@
         tbody.appendChild(fila);
       });
 
-      // Llenar observaciones de formato / APA 7
       const apaContenedor = document.getElementById("apaContenedor");
       const listaApa = document.getElementById("listaApa");
       listaApa.innerHTML = "";

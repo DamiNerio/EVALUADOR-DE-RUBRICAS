@@ -4,18 +4,21 @@ import re
 import zipfile
 from pathlib import Path
 from typing import Optional
-from fastapi.responses import FileResponse
+
 import httpx
 from docx import Document
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
-# Carga automáticamente las variables de tu archivo .env (GEMINI_API_KEY y opcionalmente GITHUB_TOKEN)
+# Carga variables del archivo .env local (en Render se leen desde Environment Variables)
 load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
 
 # Extensiones de código permitidas dentro de un .zip, repositorio de GitHub o archivo suelto
 EXTENSIONES_CODIGO = {
@@ -28,6 +31,11 @@ EXTENSIONES_CODIGO = {
 CARPETAS_IGNORADAS = {
     ".git", "__pycache__", "node_modules", "venv",
     ".venv", "dist", "build", "bin", "obj", ".vs", ".vscode", ".pytest_cache"
+}
+
+# Archivos pesados de dependencias que no aportan a la evaluación y saturan la memoria
+ARCHIVOS_IGNORADOS = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "cargo.lock"
 }
 
 
@@ -81,7 +89,10 @@ def leer_docx_en_memoria(archivo_bytes: bytes, nombre_archivo: str) -> str:
     try:
         doc = Document(io.BytesIO(archivo_bytes))
     except Exception:
-        raise HTTPException(status_code=400, detail=f"No se pudo abrir '{nombre_archivo}' como un documento Word válido.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"No se pudo abrir '{nombre_archivo}' como un documento Word (.docx) válido."
+        )
 
     bloques = [f"=== DOCUMENTO WORD ENTREGADO: {nombre_archivo} ===\n"]
 
@@ -98,25 +109,39 @@ def leer_docx_en_memoria(archivo_bytes: bytes, nombre_archivo: str) -> str:
     return "\n".join(bloques)
 
 
-def leer_zip_en_memoria(archivo_bytes: bytes, origen: str = "ARCHIVO .ZIP", max_caracteres: int = 250_000) -> str:
+def leer_zip_en_memoria(
+    archivo_bytes: bytes,
+    origen: str = "ARCHIVO .ZIP",
+    max_caracteres: int = 90_000,
+) -> str:
     """Descomprime un .zip en RAM, filtra carpetas innecesarias y concatena el código fuente."""
     bloques = [f"=== CÓDIGO FUENTE DEL PROYECTO ({origen}) ===\n"]
     caracteres_actuales = 0
 
     try:
         with zipfile.ZipFile(io.BytesIO(archivo_bytes), "r") as zf:
+            # Primero listamos el árbol de archivos para que Gemini conozca toda la estructura del proyecto
+            rutas_validas = []
             for info in sorted(zf.infolist(), key=lambda x: x.filename):
                 if info.is_dir():
                     continue
-
                 ruta_interna = Path(info.filename)
-
-                # Ignorar carpetas como node_modules, venv, .git, bin, obj
                 if any(parte in CARPETAS_IGNORADAS for parte in ruta_interna.parts):
                     continue
+                rutas_validas.append(info)
 
+            if rutas_validas:
+                arbol = "\n".join(f"- {r.filename}" for r in rutas_validas[:120])
+                bloques.append(f"ESTRUCTURA DE ARCHIVOS DETECTADA:\n{arbol}\n")
+
+            for info in rutas_validas:
+                ruta_interna = Path(info.filename)
                 nombre_lower = ruta_interna.name.lower()
-                es_dockerfile = nombre_lower == "dockerfile" or nombre_lower == "docker-compose.yml"
+
+                if nombre_lower in ARCHIVOS_IGNORADOS:
+                    continue
+
+                es_dockerfile = nombre_lower in {"dockerfile", "docker-compose.yml", "docker-compose.yaml"}
 
                 if ruta_interna.suffix.lower() not in EXTENSIONES_CODIGO and not es_dockerfile:
                     continue
@@ -127,7 +152,7 @@ def leer_zip_en_memoria(archivo_bytes: bytes, origen: str = "ARCHIVO .ZIP", max_
                     fragmento = f"\n--- ARCHIVO: {info.filename} ---\n{texto_codigo}\n"
 
                     if caracteres_actuales + len(fragmento) > max_caracteres:
-                        bloques.append("\n[Aviso: Se alcanzó el límite máximo de caracteres leídos del repositorio]")
+                        bloques.append("\n[Aviso: Se alcanzó el límite de lectura optimizado para memoria]")
                         break
 
                     bloques.append(fragmento)
@@ -137,7 +162,7 @@ def leer_zip_en_memoria(archivo_bytes: bytes, origen: str = "ARCHIVO .ZIP", max_
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="El archivo comprimido (.zip) está dañado o no es válido.")
 
-    if len(bloques) == 1:
+    if len(bloques) <= 1:
         raise HTTPException(
             status_code=400,
             detail="No se encontraron archivos de código reconocidos (.py, .cs, .js, .html, .sql, .md, etc.) dentro del .zip."
@@ -176,8 +201,9 @@ async def preparar_entregable(entregable: UploadFile) -> types.Part | str:
 
 async def descargar_repo_github_en_memoria(github_url: str) -> str:
     """Descarga un repositorio de GitHub como .zip en RAM y extrae su código fuente."""
+    url_limpia = github_url.strip().split("?")[0].split("#")[0]
     patron = r"github\.com/([^/]+)/([^/]+?)(?:\.git)?(?:/tree/([^/]+))?/?$"
-    coincidencia = re.search(patron, github_url.strip())
+    coincidencia = re.search(patron, url_limpia)
 
     if not coincidencia:
         raise HTTPException(
@@ -196,35 +222,38 @@ async def descargar_repo_github_en_memoria(github_url: str) -> str:
         "User-Agent": "FastAPI-Rubric-Evaluator"
     }
 
-    # Si defines GITHUB_TOKEN en tu .env, también podrás evaluar repositorios privados
     github_token = os.getenv("GITHUB_TOKEN")
     if github_token:
-        headers["Authorization"] = f"Bearer {github_token}"
+        headers["Authorization"] = f"Bearer {github_token.strip()}"
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as http_client:
+    async with httpx.AsyncClient(follow_redirects=True, timeout=45.0) as http_client:
         respuesta = await http_client.get(api_url, headers=headers)
 
         if respuesta.status_code == 404:
             raise HTTPException(
                 status_code=404,
-                detail=f"No se encontró el repositorio '{owner}/{repo}' o es privado (agrega GITHUB_TOKEN en tu .env si es privado)."
+                detail=(
+                    f"No se pudo acceder al repositorio '{owner}/{repo}'. "
+                    "Verifica que la URL esté bien escrita y que el repositorio sea Público "
+                    "(o agrega GITHUB_TOKEN en las variables de entorno si es Privado)."
+                )
             )
         if respuesta.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"Error al descargar el repositorio desde GitHub (Código HTTP {respuesta.status_code})."
+                detail=f"GitHub devolvió un error al descargar el repositorio (Código HTTP {respuesta.status_code})."
             )
 
         return leer_zip_en_memoria(respuesta.content, origen=f"GitHub: {owner}/{repo}")
 
 
 # ---------------------------------------------------------
-# 3. CONFIGURACIÓN DE FASTAPI Y ENDPOINT PRINCIPAL
+# 3. CONFIGURACIÓN DE FASTAPI Y MANEJO DE ERRORES JSON
 # ---------------------------------------------------------
 app = FastAPI(
     title="API Evaluadora de Rúbricas Universitarias",
     description="Evalúa reportes (.pdf, .docx), proyectos (.zip) o repositorios de GitHub contra el PDF de la rúbrica oficial.",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 app.add_middleware(
@@ -233,6 +262,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Garantiza que cualquier error inesperado devuelva JSON y nunca una página HTML
+@app.exception_handler(Exception)
+async def manejador_excepciones_global(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Error interno en el servidor: {str(exc)}"},
+    )
 
 
 @app.post("/api/v1/evaluar", response_model=DictamenRubrica)
@@ -247,74 +285,101 @@ async def evaluar_entrega_endpoint(
         description="(Opcional) Pega la URL de tu repositorio de GitHub (ej. https://github.com/usuario/repo)"
     ),
 ):
-    # 1. Verificar API Key
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Falta configurar la variable de entorno GEMINI_API_KEY en el archivo .env"
-        )
-
-    # 2. Validar que la rúbrica sea un archivo PDF
-    if not (rubrica_pdf.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="El archivo en 'rubrica_pdf' debe tener extensión .pdf")
-
-    # 3. Comprobar que el usuario haya enviado al menos un archivo entregable o un link de GitHub
-    tiene_archivo = entregable is not None and bool(entregable.filename)
-    tiene_url = github_url is not None and bool(github_url.strip())
-
-    if not tiene_archivo and not tiene_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Debes proporcionar al menos un archivo en 'entregable' o una URL en 'github_url'."
-        )
-
-    # 4. Construir la lista de elementos que revisará Gemini
-    bytes_rubrica = await rubrica_pdf.read()
-    elementos_para_gemini: list = [
-        types.Part.from_bytes(data=bytes_rubrica, mime_type="application/pdf")
-    ]
-
-    if tiene_archivo and entregable is not None:
-        contenido_archivo = await preparar_entregable(entregable)
-        elementos_para_gemini.append(contenido_archivo)
-
-    if tiene_url and github_url is not None:
-        contenido_repo = await descargar_repo_github_en_memoria(github_url)
-        elementos_para_gemini.append(contenido_repo)
-
-    instrucciones = (
-        "Actúa como un profesor universitario estricto de Ingeniería de Software. "
-        "El primer documento adjunto es la RÚBRICA OFICIAL DE EVALUACIÓN en PDF. "
-        "Los elementos siguientes constituyen la ENTREGA DEL ESTUDIANTE (documento, código o ambos).\n\n"
-        "Tu tarea:\n"
-        "1. Identifica cada criterio y su puntaje en la rúbrica oficial.\n"
-        "2. Evalúa rigurosamente si la entrega cumple con la arquitectura, endpoints, pruebas, "
-        "reglas de negocio, profundidad teórica o formato APA 7 solicitados.\n"
-        "3. Señala exactamente qué archivos o secciones cumplen y qué debe corregir el alumno "
-        "para alcanzar el 100% de la calificación."
-    )
-    elementos_para_gemini.append(instrucciones)
-
-    # 5. Llamada asíncrona a Gemini API
     try:
-        client = genai.Client(api_key=api_key)
-        response = await client.aio.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", "gemini-4-hydrogen"),
-            contents=elementos_para_gemini,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=DictamenRubrica,
-                temperature=0.1,
-            ),
+        # 1. Verificar API Key
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="Falta configurar la variable de entorno GEMINI_API_KEY en Render o en tu archivo .env"
+            )
+
+        # 2. Validar que la rúbrica sea un archivo PDF
+        if not (rubrica_pdf.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(status_code=400, detail="El archivo en 'rubrica_pdf' debe tener extensión .pdf")
+
+        # 3. Comprobar que el usuario haya enviado al menos un archivo entregable o un link de GitHub
+        tiene_archivo = entregable is not None and bool(entregable.filename)
+        tiene_url = github_url is not None and bool(github_url.strip())
+
+        if not tiene_archivo and not tiene_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Debes proporcionar al menos un archivo en 'entregable' o una URL en 'github_url'."
+            )
+
+        # 4. Construir la lista de elementos que revisará Gemini
+        bytes_rubrica = await rubrica_pdf.read()
+        elementos_para_gemini: list = [
+            types.Part.from_bytes(data=bytes_rubrica, mime_type="application/pdf")
+        ]
+
+        if tiene_archivo and entregable is not None:
+            contenido_archivo = await preparar_entregable(entregable)
+            elementos_para_gemini.append(contenido_archivo)
+
+        if tiene_url and github_url is not None:
+            contenido_repo = await descargar_repo_github_en_memoria(github_url)
+            elementos_para_gemini.append(contenido_repo)
+
+        instrucciones = (
+            "Actúa como un profesor universitario estricto de Ingeniería de Software. "
+            "El primer documento adjunto es la RÚBRICA OFICIAL DE EVALUACIÓN en PDF. "
+            "Los elementos siguientes constituyen la ENTREGA DEL ESTUDIANTE (documento, código o ambos).\n\n"
+            "Tu tarea:\n"
+            "1. Identifica cada criterio y su puntaje en la rúbrica oficial.\n"
+            "2. Evalúa rigurosamente si la entrega cumple con la arquitectura, endpoints, pruebas, "
+            "reglas de negocio, profundidad teórica o formato APA 7 solicitados.\n"
+            "3. Señala exactamente qué archivos o secciones cumplen y qué debe corregir el alumno "
+            "para alcanzar el 100% de la calificación."
         )
+        elementos_para_gemini.append(instrucciones)
+
+        # 5. Llamada asíncrona a Gemini API con respaldo automático de modelo
+        client = genai.Client(api_key=api_key.strip())
+        modelo_preferido = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+        config_generacion = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=DictamenRubrica,
+            temperature=0.1,
+        )
+
+        try:
+            response = await client.aio.models.generate_content(
+                model=modelo_preferido,
+                contents=elementos_para_gemini,
+                config=config_generacion,
+            )
+        except Exception as err_modelo:
+            # Si el nombre del modelo en .env no está disponible en la cuenta, usa gemini-2.5-flash automáticamente
+            if modelo_preferido != "gemini-2.5-flash":
+                response = await client.aio.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=elementos_para_gemini,
+                    config=config_generacion,
+                )
+            else:
+                raise err_modelo
+
         return DictamenRubrica.model_validate_json(response.text)
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=502,
             detail=f"Error al procesar la evaluación con Gemini API: {str(e)}"
         )
 
+
+# Sirve tu interfaz index.html cuando entras a la raíz del servidor (local o Render)
 @app.get("/", include_in_schema=False)
 async def servir_frontend():
-    return FileResponse("index.html")
+    ruta_html = BASE_DIR / "index.html"
+    if not ruta_html.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "No se encontró el archivo index.html en la raíz del proyecto."}
+        )
+    return FileResponse(ruta_html)
