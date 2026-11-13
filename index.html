@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Evaluador de Rúbricas con IA</title>
+  <style>
+    :root {
+      --bg-page: #fdf8fa;
+      --bg-card: #ffffff;
+      --pink-soft: #fce7f3;
+      --pink-pastel: #f9a8d4;
+      --pink-primary: #ec4899;
+      --pink-hover: #db2777;
+      --pink-dark: #9d174d;
+      --text-main: #1f2937;
+      --text-muted: #6b7280;
+      --border-color: #f3d6e4;
+      --success-bg: #dcfce7;
+      --success-text: #166534;
+      --warn-bg: #fef3c7;
+      --warn-text: #92400e;
+      --danger-bg: #ffe4e6;
+      --danger-text: #9f1239;
+      --shadow-sm: 0 4px 16px rgba(236, 72, 153, 0.07);
+      --radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-page);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 2rem 1rem 4rem;
+    }
+
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    /* Encabezado */
+    header {
+      background: linear-gradient(135deg, #ffffff 0%, #fdf2f8 100%);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 2rem;
+      margin-bottom: 1.75rem;
+      box-shadow: var(--shadow-sm);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    header h1 {
+      font-size: 1.65rem;
+      color: var(--pink-dark);
+      font-weight: 700;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-top: 0.25rem;
+    }
+
+    .api-badge {
+      background-color: var(--pink-soft);
+      color: var(--pink-dark);
+      padding: 0.45rem 0.9rem;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      border: 1px solid var(--pink-pastel);
+    }
+
+    .api-dot {
+      width: 8px;
+      height: 8px;
+      background-color: var(--pink-primary);
+      border-radius: 50%;
+    }
+
+    /* Tarjetas del formulario */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 1.75rem;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 1.5rem;
+    }
+
+    .grid-inputs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--pink-dark);
+      margin-bottom: 0.35rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .step-badge {
+      background: var(--pink-soft);
+      color: var(--pink-dark);
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+    }
+
+    .helper-text {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.85rem;
+    }
+
+    /* Zonas de carga de archivos */
+    .dropzone {
+      border: 2px dashed var(--pink-pastel);
+      background-color: #fffafd;
+      border-radius: 12px;
+      padding: 1.35rem 1rem;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      position: relative;
+    }
+
+    .dropzone:hover {
+      border-color: var(--pink-primary);
+      background-color: #fdf2f8;
+    }
+
+    .dropzone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .dropzone-title {
+      font-weight: 600;
+      font-size: 0.92rem;
+      color: var(--pink-dark);
+    }
+
+    .file-selected {
+      margin-top: 0.5rem;
+      font-size: 0.83rem;
+      color: var(--pink-primary);
+      font-weight: 600;
+      word-break: break-all;
+    }
+
+    /* Input URL de GitHub */
+    .input-group {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .input-group label {
+      display: block;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.4rem;
+    }
+
+    .text-input {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1.5px solid var(--border-color);
+      border-radius: 10px;
+      font-size: 0.92rem;
+      outline: none;
+      transition: border-color 0.2s;
+      background-color: #fffafd;
+    }
+
+    .text-input:focus {
+      border-color: var(--pink-primary);
+      background-color: #ffffff;
+    }
+
+    /* Botón principal */
+    .btn-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      background-color: var(--pink-primary);
+      color: #ffffff;
+      border: none;
+      padding: 0.9rem 1.75rem;
+      border-radius: 12px;
+      font-size: 0.98rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background-color: var(--pink-hover);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background-color: var(--pink-soft);
+      color: var(--pink-dark);
+      border: 1px solid var(--pink-pastel);
+      padding: 0.85rem 1.3rem;
+      border-radius: 12px;
+      font-size: 0.92rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .btn-secondary:hover {
+      background-color: #fbcfe8;
+    }
+
+    /* Spinner de carga */
+    .loader-box {
+      display: none;
+      align-items: center;
+      gap: 0.85rem;
+      padding: 1.25rem;
+      background-color: #fdf2f8;
+      border: 1px solid var(--pink-pastel);
+      border-radius: 12px;
+      margin-top: 1rem;
+      color: var(--pink-dark);
+      font-weight: 500;
+    }
+
+    .spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--pink-pastel);
+      border-top-color: var(--pink-primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Caja de error */
+    .error-box {
+      display: none;
+      background-color: var(--danger-bg);
+      color: var(--danger-text);
+      border: 1px solid #fecdd3;
+      padding: 1rem 1.25rem;
+      border-radius: 12px;
+      margin-top: 1rem;
+      font-size: 0.92rem;
+      font-weight: 500;
+    }
+
+    /* Sección de Resultados */
+    #resultadosSection {
+      display: none;
+    }
+
+    .score-banner {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      padding: 1.5rem;
+      background: linear-gradient(135deg, #fdf2f8 0%, #ffffff 100%);
+      border: 1px solid var(--pink-pastel);
+      border-radius: 14px;
+      margin-bottom: 1.5rem;
+    }
+
+    .score-number {
+      font-size: 2.4rem;
+      font-weight: 800;
+      color: var(--pink-dark);
+      line-height: 1.1;
+    }
+
+    .score-label {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 10px;
+      background-color: var(--pink-soft);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 0.75rem;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--pink-pastel), var(--pink-primary));
+      width: 0%;
+      transition: width 0.6s ease;
+    }
+
+    /* Tabla de Criterios */
+    .table-wrapper {
+      overflow-x: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      margin-top: 1rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+      background: #ffffff;
+    }
+
+    th {
+      background-color: #fdf2f8;
+      color: var(--pink-dark);
+      text-align: left;
+      padding: 0.9rem 1rem;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      border-bottom: 2px solid var(--border-color);
+    }
+
+    td {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-color);
+      font-size: 0.92rem;
+      vertical-align: top;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background-color: #fffafd;
+    }
+
+    .status-pill {
+      display: inline-block;
+      padding: 0.3rem 0.7rem;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .status-ok {
+      background-color: var(--success-bg);
+      color: var(--success-text);
+    }
+
+    .status-partial {
+      background-color: var(--warn-bg);
+      color: var(--warn-text);
+    }
+
+    .status-fail {
+      background-color: var(--danger-bg);
+      color: var(--danger-text);
+    }
+
+    .apa-list {
+      list-style: none;
+      margin-top: 0.75rem;
+    }
+
+    .apa-list li {
+      padding: 0.6rem 0.85rem;
+      background-color: #fffafd;
+      border-left: 4px solid var(--pink-primary);
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      font-size: 0.92rem;
+    }
+
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+      body {
+        background: #ffffff;
+        padding: 0;
+      }
+      .card {
+        box-shadow: none;
+        border: 1px solid #ddd;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Encabezado -->
+    <header>
+      <div>
+        <h1>Evaluador Inteligente de Rúbricas</h1>
+        <p>Audita tus reportes (.docx / .pdf) y repositorios de código antes de entregar</p>
+      </div>
+      <div class="api-badge">
+        <span class="api-dot"></span>
+        API: localhost:8000
+      </div>
+    </header>
+
+    <!-- Formulario de carga -->
+    <form id="formEvaluador" class="card no-print">
+      <div class="grid-inputs">
+        <!-- Paso 1: Rúbrica -->
+        <div>
+          <div class="step-title">
+            <span class="step-badge">1</span>
+            Rúbrica Oficial del Profesor (Obligatorio)
+          </div>
+          <p class="helper-text">Sube el archivo PDF donde vienen los criterios y puntajes a evaluar.</p>
+
+          <div class="dropzone">
+            <input type="file" id="rubricaInput" accept=".pdf" required />
+            <div class="dropzone-title">Haz clic o arrastra tu Rúbrica en PDF aquí</div>
+            <div id="rubricaNombre" class="file-selected">Ningún archivo seleccionado</div>
+          </div>
+        </div>
+
+        <!-- Paso 2: Entregable / GitHub -->
+        <div>
+          <div class="step-title">
+            <span class="step-badge">2</span>
+            Tu Entrega (Archivo, URL de GitHub o ambos)
+          </div>
+          <p class="helper-text">Puedes subir tu documento/código y además pegar tu repositorio.</p>
+
+          <div class="dropzone">
+            <input type="file" id="entregableInput" accept=".pdf,.docx,.zip,.py,.cs,.js,.ts,.html,.css,.sql,.md" />
+            <div class="dropzone-title">Sube tu .docx, .pdf, .zip o script (Opcional)</div>
+            <div id="entregableNombre" class="file-selected">Ningún archivo seleccionado</div>
+          </div>
+
+          <div class="input-group">
+            <label for="githubInput">O pega el enlace de tu repositorio en GitHub:</label>
+            <input
+              type="url"
+              id="githubInput"
+              class="text-input"
+              placeholder="https://github.com/tu-usuario/tu-repositorio"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button type="submit" id="btnEvaluar" class="btn-primary">
+          Evaluar Entrega con Gemini IA
+        </button>
+        <button type="button" id="btnLimpiar" class="btn-secondary">
+          Limpiar campos
+        </button>
+      </div>
+
+      <!-- Indicador de carga -->
+      <div id="loaderBox" class="loader-box">
+        <div class="spinner"></div>
+        <div>
+          <strong>Analizando rúbrica y revisando tu entrega...</strong><br />
+          <span style="font-size: 0.85rem;">Esto puede tomar entre 10 y 25 segundos según el tamaño de tu proyecto.</span>
+        </div>
+      </div>
+
+      <!-- Mensajes de error -->
+      <div id="errorBox" class="error-box"></div>
+    </form>
+
+    <!-- Sección de Resultados -->
+    <section id="resultadosSection">
+      <div class="card">
+        <div class="score-banner">
+          <div style="flex: 1; min-width: 240px;">
+            <div class="score-label">Diagnóstico General</div>
+            <p id="resumenTexto" style="margin-top: 0.4rem; font-size: 0.98rem;"></p>
+          </div>
+
+          <div style="text-align: right; min-width: 180px;">
+            <div class="score-label">Calificación Estimada</div>
+            <div id="puntajeTexto" class="score-number">0 / 100</div>
+          </div>
+
+          <div class="progress-bar-bg">
+            <div id="barraProgreso" class="progress-bar-fill"></div>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+          <h2 style="font-size: 1.2rem; color: var(--pink-dark);">Desglose por Criterio de la Rúbrica</h2>
+          <button type="button" onclick="window.print()" class="btn-secondary no-print" style="padding: 0.5rem 1rem; font-size: 0.85rem;">
+            Imprimir / Guardar como PDF
+          </button>
+        </div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 20%;">Criterio</th>
+                <th style="width: 10%;">Puntaje</th>
+                <th style="width: 14%;">Estado</th>
+                <th style="width: 28%;">Evidencia o Fallo Detectado</th>
+                <th style="width: 28%;">Qué corregir para el 100%</th>
+              </tr>
+            </thead>
+            <tbody id="tablaCriteriosBody"></tbody>
+          </table>
+        </div>
+
+        <!-- Observaciones de Formato y APA 7 -->
+        <div id="apaContenedor" style="margin-top: 1.75rem; display: none;">
+          <h3 style="font-size: 1.05rem; color: var(--pink-dark);">
+            Observaciones de Formato, Estándares de Código y APA 7
+          </h3>
+          <ul id="listaApa" class="apa-list"></ul>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const API_URL = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.protocol === "file:")
+  ? "http://127.0.0.1:8000/api/v1/evaluar"
+  : "/api/v1/evaluar";
+
+    const form = document.getElementById("formEvaluador");
+    const rubricaInput = document.getElementById("rubricaInput");
+    const entregableInput = document.getElementById("entregableInput");
+    const githubInput = document.getElementById("githubInput");
+    const rubricaNombre = document.getElementById("rubricaNombre");
+    const entregableNombre = document.getElementById("entregableNombre");
+    const btnEvaluar = document.getElementById("btnEvaluar");
+    const btnLimpiar = document.getElementById("btnLimpiar");
+    const loaderBox = document.getElementById("loaderBox");
+    const errorBox = document.getElementById("errorBox");
+    const resultadosSection = document.getElementById("resultadosSection");
+
+    // Mostrar nombres de archivos seleccionados
+    rubricaInput.addEventListener("change", () => {
+      rubricaNombre.textContent = rubricaInput.files[0]
+        ? `Seleccionado: ${rubricaInput.files[0].name}`
+        : "Ningún archivo seleccionado";
+    });
+
+    entregableInput.addEventListener("change", () => {
+      entregableNombre.textContent = entregableInput.files[0]
+        ? `Seleccionado: ${entregableInput.files[0].name}`
+        : "Ningún archivo seleccionado";
+    });
+
+    // Limpiar formulario
+    btnLimpiar.addEventListener("click", () => {
+      form.reset();
+      rubricaNombre.textContent = "Ningún archivo seleccionado";
+      entregableNombre.textContent = "Ningún archivo seleccionado";
+      errorBox.style.display = "none";
+      resultadosSection.style.display = "none";
+    });
+
+    // Función para asignar color según el estado del criterio
+    function obtenerClaseEstado(estado) {
+      const texto = (estado || "").toLowerCase();
+      if (texto.includes("totalmente")) return "status-ok";
+      if (texto.includes("parcialmente")) return "status-partial";
+      return "status-fail";
+    }
+
+    // Envío del formulario a FastAPI
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.style.display = "none";
+
+      const archivoRubrica = rubricaInput.files[0];
+      const archivoEntregable = entregableInput.files[0];
+      const urlGithub = githubInput.value.trim();
+
+      if (!archivoRubrica) {
+        mostrarError("Por favor selecciona el archivo PDF de la rúbrica.");
+        return;
+      }
+
+      if (!archivoEntregable && !urlGithub) {
+        mostrarError("Debes subir un archivo entregable (.docx, .pdf, .zip) o pegar la URL de tu repositorio de GitHub.");
+        return;
+      }
+
+      // Construimos el FormData solo con los campos que sí tienen contenido
+      const formData = new FormData();
+      formData.append("rubrica_pdf", archivoRubrica);
+
+      if (archivoEntregable) {
+        formData.append("entregable", archivoEntregable);
+      }
+
+      if (urlGithub) {
+        formData.append("github_url", urlGithub);
+      }
+
+      try {
+        btnEvaluar.disabled = true;
+        loaderBox.style.display = "flex";
+        resultadosSection.style.display = "none";
+
+        const respuesta = await fetch(API_URL, {
+          method: "POST",
+          body: formData,
+        });
+
+        const datos = await respuesta.json();
+
+        if (!respuesta.ok) {
+          throw new Error(datos.detail || "Ocurrió un error al evaluar la entrega.");
+        }
+
+        renderizarResultados(datos);
+      } catch (err) {
+        mostrarError(
+          err.message === "Failed to fetch"
+            ? "No se pudo conectar con http://127.0.0.1:8000. Verifica que tu servidor FastAPI esté encendido con uvicorn."
+            : err.message
+        );
+      } finally {
+        btnEvaluar.disabled = false;
+        loaderBox.style.display = "none";
+      }
+    });
+
+    function mostrarError(mensaje) {
+      errorBox.textContent = mensaje;
+      errorBox.style.display = "block";
+    }
+
+    function renderizarResultados(dictamen) {
+      const obtenida = Number(dictamen.calificacion_total_estimada || 0);
+      const maxima = Number(dictamen.calificacion_maxima_posible || 100);
+      const porcentaje = maxima > 0 ? Math.min(100, Math.round((obtenida / maxima) * 100)) : 0;
+
+      document.getElementById("puntajeTexto").textContent = `${obtenida} / ${maxima}`;
+      document.getElementById("resumenTexto").textContent = dictamen.resumen_general || "";
+      document.getElementById("barraProgreso").style.width = `${porcentaje}%`;
+
+      // Llenar tabla de criterios
+      const tbody = document.getElementById("tablaCriteriosBody");
+      tbody.innerHTML = "";
+
+      (dictamen.desglose_criterios || []).forEach((item) => {
+        const fila = document.createElement("tr");
+        const claseBadge = obtenerClaseEstado(item.estado);
+
+        fila.innerHTML = `
+          <td style="font-weight: 600;">${escaparHtml(item.criterio)}</td>
+          <td style="font-weight: 700; color: var(--pink-dark);">${item.puntos_estimados} / ${item.puntos_maximos}</td>
+          <td><span class="status-pill ${claseBadge}">${escaparHtml(item.estado)}</span></td>
+          <td>${escaparHtml(item.evidencia_o_fallo)}</td>
+          <td style="color: #065f46; font-weight: 500;">${escaparHtml(item.accion_correctiva)}</td>
+        `;
+        tbody.appendChild(fila);
+      });
+
+      // Llenar observaciones de formato / APA 7
+      const apaContenedor = document.getElementById("apaContenedor");
+      const listaApa = document.getElementById("listaApa");
+      listaApa.innerHTML = "";
+
+      if (dictamen.revision_formato_y_apa && dictamen.revision_formato_y_apa.length > 0) {
+        dictamen.revision_formato_y_apa.forEach((obs) => {
+          const li = document.createElement("li");
+          li.textContent = obs;
+          listaApa.appendChild(li);
+        });
+        apaContenedor.style.display = "block";
+      } else {
+        apaContenedor.style.display = "none";
+      }
+
+      resultadosSection.style.display = "block";
+      resultadosSection.scrollIntoView({ behavior: "smooth" });
+    }
+
+    function escaparHtml(texto) {
+      const div = document.createElement("div");
+      div.textContent = texto || "";
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
