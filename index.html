@@ -140,7 +140,7 @@
       border: 2px dashed var(--pink-pastel);
       background-color: #fffafd;
       border-radius: 12px;
-      padding: 1.35rem 1rem;
+      padding: 1.25rem 1rem;
       text-align: center;
       cursor: pointer;
       transition: all 0.2s ease;
@@ -173,6 +173,47 @@
       color: var(--pink-primary);
       font-weight: 600;
       word-break: break-all;
+    }
+
+    /* Lista de múltiples archivos seleccionados */
+    .file-list {
+      margin-top: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+    }
+
+    .file-chip {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: var(--pink-soft);
+      border: 1px solid var(--pink-pastel);
+      color: var(--pink-dark);
+      padding: 0.4rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.83rem;
+      font-weight: 600;
+      gap: 0.5rem;
+    }
+
+    .file-chip span {
+      word-break: break-all;
+    }
+
+    .file-chip button {
+      background: none;
+      border: none;
+      color: var(--pink-dark);
+      font-weight: 800;
+      cursor: pointer;
+      font-size: 0.95rem;
+      padding: 0 0.25rem;
+      line-height: 1;
+    }
+
+    .file-chip button:hover {
+      color: var(--danger-text);
     }
 
     .input-group {
@@ -440,7 +481,7 @@
     <header>
       <div>
         <h1>Evaluador Inteligente de Rúbricas</h1>
-        <p>Audita tus reportes (.docx / .pdf) y repositorios de código antes de entregar</p>
+        <p>Audita uno o varios reportes (.docx / .pdf) y repositorios de código antes de entregar</p>
       </div>
       <div class="api-badge" id="apiBadge">
         <span class="api-dot"></span>
@@ -466,19 +507,27 @@
           </div>
         </div>
 
-        <!-- Paso 2: Entregable / GitHub -->
+        <!-- Paso 2: Entregables Múltiples / GitHub -->
         <div>
           <div class="step-title">
             <span class="step-badge">2</span>
-            Tu Entrega (Archivo, URL de GitHub o ambos)
+            Tu Entrega (Uno o varios archivos, GitHub o ambos)
           </div>
-          <p class="helper-text">Puedes subir tu documento/código y además pegar tu repositorio.</p>
+          <p class="helper-text">Puedes agregar varios PDFs, Word o ZIPs que pertenezcan a la misma tarea.</p>
 
           <div class="dropzone">
-            <input type="file" id="entregableInput" accept=".pdf,.docx,.zip,.py,.cs,.js,.ts,.html,.css,.sql,.md" />
-            <div class="dropzone-title">Sube tu .docx, .pdf, .zip o script (Opcional)</div>
-            <div id="entregableNombre" class="file-selected">Ningún archivo seleccionado</div>
+            <input
+              type="file"
+              id="entregableInput"
+              accept=".pdf,.docx,.zip,.py,.cs,.js,.ts,.html,.css,.sql,.md"
+              multiple
+            />
+            <div class="dropzone-title">+ Haz clic para agregar uno o más archivos (.pdf, .docx, .zip)</div>
+            <div id="entregableContador" class="file-selected">0 archivos agregados</div>
           </div>
+
+          <!-- Lista visual de archivos agregados -->
+          <div id="listaArchivosEntregables" class="file-list"></div>
 
           <div class="input-group">
             <label for="githubInput">O pega el enlace de tu repositorio en GitHub:</label>
@@ -505,8 +554,8 @@
       <div id="loaderBox" class="loader-box">
         <div class="spinner"></div>
         <div>
-          <strong>Analizando rúbrica y revisando tu entrega...</strong><br />
-          <span style="font-size: 0.85rem;">Esto puede tomar entre 15 y 35 segundos según el tamaño de tu proyecto.</span>
+          <strong>Analizando rúbrica y revisando todos tus archivos...</strong><br />
+          <span style="font-size: 0.85rem;">Esto puede tomar entre 15 y 40 segundos según la cantidad de archivos.</span>
         </div>
       </div>
 
@@ -567,12 +616,9 @@
   </div>
 
   <script>
-    // Detecta automáticamente si estás probando en tu PC o desplegado en Render
     const esArchivoLocal = window.location.protocol === "file:";
     const esLocalhost = ["127.0.0.1", "localhost", ""].includes(window.location.hostname);
 
-    // Si lo abres con doble clic (file://) o en otro puerto local (como Live Server), apunta a 127.0.0.1:8000.
-    // Si estás dentro del servidor de FastAPI o en Render, usa la ruta relativa "/api/v1/evaluar".
     const API_URL = (esArchivoLocal || (esLocalhost && window.location.port !== "8000"))
       ? "http://127.0.0.1:8000/api/v1/evaluar"
       : "/api/v1/evaluar";
@@ -589,12 +635,16 @@
     const entregableInput = document.getElementById("entregableInput");
     const githubInput = document.getElementById("githubInput");
     const rubricaNombre = document.getElementById("rubricaNombre");
-    const entregableNombre = document.getElementById("entregableNombre");
+    const entregableContador = document.getElementById("entregableContador");
+    const listaArchivosEntregables = document.getElementById("listaArchivosEntregables");
     const btnEvaluar = document.getElementById("btnEvaluar");
     const btnLimpiar = document.getElementById("btnLimpiar");
     const loaderBox = document.getElementById("loaderBox");
     const errorBox = document.getElementById("errorBox");
     const resultadosSection = document.getElementById("resultadosSection");
+
+    // Arreglo que acumula todos los archivos que el usuario vaya seleccionando
+    let archivosAcumulados = [];
 
     rubricaInput.addEventListener("change", () => {
       rubricaNombre.textContent = rubricaInput.files[0]
@@ -602,16 +652,54 @@
         : "Ningún archivo seleccionado";
     });
 
+    // Permite seleccionar varios archivos de golpe o ir sumando archivos uno por uno
     entregableInput.addEventListener("change", () => {
-      entregableNombre.textContent = entregableInput.files[0]
-        ? `Seleccionado: ${entregableInput.files[0].name}`
-        : "Ningún archivo seleccionado";
+      const nuevosArchivos = Array.from(entregableInput.files);
+
+      nuevosArchivos.forEach((archivo) => {
+        const yaExiste = archivosAcumulados.some(
+          (item) => item.name === archivo.name && item.size === archivo.size
+        );
+        if (!yaExiste) {
+          archivosAcumulados.push(archivo);
+        }
+      });
+
+      // Limpiamos el input para permitir volver a elegir otro archivo desde otra carpeta
+      entregableInput.value = "";
+      renderizarListaArchivos();
     });
+
+    function renderizarListaArchivos() {
+      listaArchivosEntregables.innerHTML = "";
+      const total = archivosAcumulados.length;
+
+      entregableContador.textContent =
+        total === 0
+          ? "0 archivos agregados"
+          : `${total} ${total === 1 ? "archivo agregado" : "archivos agregados"}`;
+
+      archivosAcumulados.forEach((archivo, index) => {
+        const chip = document.createElement("div");
+        chip.className = "file-chip";
+        chip.innerHTML = `
+          <span>${index + 1}. ${escaparHtml(archivo.name)}</span>
+          <button type="button" title="Quitar archivo" onclick="quitarArchivo(${index})">✕</button>
+        `;
+        listaArchivosEntregables.appendChild(chip);
+      });
+    }
+
+    window.quitarArchivo = function (index) {
+      archivosAcumulados.splice(index, 1);
+      renderizarListaArchivos();
+    };
 
     btnLimpiar.addEventListener("click", () => {
       form.reset();
+      archivosAcumulados = [];
       rubricaNombre.textContent = "Ningún archivo seleccionado";
-      entregableNombre.textContent = "Ningún archivo seleccionado";
+      renderizarListaArchivos();
       errorBox.style.display = "none";
       resultadosSection.style.display = "none";
     });
@@ -628,7 +716,6 @@
       errorBox.style.display = "none";
 
       const archivoRubrica = rubricaInput.files[0];
-      const archivoEntregable = entregableInput.files[0];
       const urlGithub = githubInput.value.trim();
 
       if (!archivoRubrica) {
@@ -636,17 +723,18 @@
         return;
       }
 
-      if (!archivoEntregable && !urlGithub) {
-        mostrarError("Debes subir un archivo entregable (.docx, .pdf, .zip) o pegar la URL de tu repositorio de GitHub.");
+      if (archivosAcumulados.length === 0 && !urlGithub) {
+        mostrarError("Debes agregar al menos un archivo entregable (.pdf, .docx, .zip) o pegar la URL de tu repositorio de GitHub.");
         return;
       }
 
       const formData = new FormData();
       formData.append("rubrica_pdf", archivoRubrica);
 
-      if (archivoEntregable) {
-        formData.append("entregable", archivoEntregable);
-      }
+      // Agregamos cada uno de los archivos acumulados bajo el campo "entregables"
+      archivosAcumulados.forEach((archivo) => {
+        formData.append("entregables", archivo);
+      });
 
       if (urlGithub) {
         formData.append("github_url", urlGithub);
@@ -662,7 +750,6 @@
           body: formData,
         });
 
-        // Leemos como texto primero para capturar errores HTML (502/504/404) sin romper JSON.parse
         const textoCrudo = await respuesta.text();
         let datos;
         try {
@@ -723,17 +810,17 @@
       });
 
       const apaContenedor = document.getElementById("apaContenedor");
-      const listaApa = document.getElementById("listaApa");
-      listaApa.innerHTML = "";
+      const listaApa = document.getElementById("apaContenedor") ? document.getElementById("listaApa") : null;
+      if (listaApa) listaApa.innerHTML = "";
 
-      if (dictamen.revision_formato_y_apa && dictamen.revision_formato_y_apa.length > 0) {
+      if (dictamen.revision_formato_y_apa && dictamen.revision_formato_y_apa.length > 0 && listaApa) {
         dictamen.revision_formato_y_apa.forEach((obs) => {
           const li = document.createElement("li");
           li.textContent = obs;
           listaApa.appendChild(li);
         });
         apaContenedor.style.display = "block";
-      } else {
+      } else if (apaContenedor) {
         apaContenedor.style.display = "none";
       }
 

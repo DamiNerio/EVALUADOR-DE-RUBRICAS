@@ -56,7 +56,7 @@ class EvaluacionCriterio(BaseModel):
         description="Cumple totalmente | Cumple parcialmente | No cumple"
     )
     evidencia_o_fallo: str = Field(
-        description="Qué parte del documento o código cumple o qué elemento específico falta"
+        description="Qué parte de los documentos o código cumple o qué elemento específico falta"
     )
     accion_correctiva: str = Field(
         description="Instrucción concreta de qué agregar o corregir para obtener el 100% de los puntos"
@@ -101,7 +101,7 @@ def leer_docx_en_memoria(archivo_bytes: bytes, nombre_archivo: str) -> str:
             bloques.append(p.text)
 
     for idx, tabla in enumerate(doc.tables, start=1):
-        bloques.append(f"\n--- [Tabla {idx} del documento] ---")
+        bloques.append(f"\n--- [Tabla {idx} de {nombre_archivo}] ---")
         for fila in tabla.rows:
             celdas = [c.text.strip() for c in fila.cells]
             bloques.append(" | ".join(celdas))
@@ -120,7 +120,6 @@ def leer_zip_en_memoria(
 
     try:
         with zipfile.ZipFile(io.BytesIO(archivo_bytes), "r") as zf:
-            # Primero listamos el árbol de archivos para que Gemini conozca toda la estructura del proyecto
             rutas_validas = []
             for info in sorted(zf.infolist(), key=lambda x: x.filename):
                 if info.is_dir():
@@ -160,42 +159,46 @@ def leer_zip_en_memoria(
                 except Exception:
                     continue
     except zipfile.BadZipFile:
-        raise HTTPException(status_code=400, detail="El archivo comprimido (.zip) está dañado o no es válido.")
+        raise HTTPException(status_code=400, detail=f"El archivo comprimido ({origen}) está dañado o no es válido.")
 
     if len(bloques) <= 1:
         raise HTTPException(
             status_code=400,
-            detail="No se encontraron archivos de código reconocidos (.py, .cs, .js, .html, .sql, .md, etc.) dentro del .zip."
+            detail=f"No se encontraron archivos de código reconocidos dentro de {origen}."
         )
 
     return "".join(bloques)
 
 
-async def preparar_entregable(entregable: UploadFile) -> types.Part | str:
-    """Detecta el formato del archivo subido (.pdf, .docx, .zip o código) y lo procesa en RAM."""
-    nombre = entregable.filename or "entregable"
+async def preparar_entregable(entregable: UploadFile, indice: int) -> list:
+    """Detecta el formato de cada archivo subido y devuelve los elementos para Gemini."""
+    nombre = entregable.filename or f"entregable_{indice}"
     extension = Path(nombre).suffix.lower()
     archivo_bytes = await entregable.read()
 
     if not archivo_bytes:
         raise HTTPException(status_code=400, detail=f"El archivo '{nombre}' está vacío.")
 
+    # Si es PDF, enviamos una etiqueta identificadora seguida del documento PDF en bytes
     if extension == ".pdf":
-        return types.Part.from_bytes(data=archivo_bytes, mime_type="application/pdf")
+        return [
+            f"=== ARCHIVO ENTREGABLE #{indice} DEL ESTUDIANTE (PDF): {nombre} ===",
+            types.Part.from_bytes(data=archivo_bytes, mime_type="application/pdf"),
+        ]
 
     if extension == ".docx":
-        return leer_docx_en_memoria(archivo_bytes, nombre)
+        return [leer_docx_en_memoria(archivo_bytes, nombre)]
 
     if extension == ".zip":
-        return leer_zip_en_memoria(archivo_bytes, origen=f"ZIP: {nombre}")
+        return [leer_zip_en_memoria(archivo_bytes, origen=f"ZIP #{indice}: {nombre}")]
 
     if extension in EXTENSIONES_CODIGO or Path(nombre).name.lower() == "dockerfile":
         texto = archivo_bytes.decode("utf-8", errors="ignore")
-        return f"=== ARCHIVO DE CÓDIGO ENTREGADO: {nombre} ===\n{texto}"
+        return [f"=== ARCHIVO DE CÓDIGO ENTREGADO #{indice}: {nombre} ===\n{texto}"]
 
     raise HTTPException(
         status_code=400,
-        detail=f"Formato '{extension}' no soportado. Sube un archivo .pdf, .docx, .zip o código fuente."
+        detail=f"Formato '{extension}' en '{nombre}' no soportado. Sube archivos .pdf, .docx, .zip o código fuente."
     )
 
 
@@ -251,9 +254,9 @@ async def descargar_repo_github_en_memoria(github_url: str) -> str:
 # 3. CONFIGURACIÓN DE FASTAPI Y MANEJO DE ERRORES JSON
 # ---------------------------------------------------------
 app = FastAPI(
-    title="API Evaluadora de Rúbricas Universitarias",
-    description="Evalúa reportes (.pdf, .docx), proyectos (.zip) o repositorios de GitHub contra el PDF de la rúbrica oficial.",
-    version="2.1.0",
+    title="API Evaluadora de Rúbricas Universitarias (Multi-Archivo)",
+    description="Evalúa múltiples reportes (.pdf, .docx), proyectos (.zip) y repositorios de GitHub contra el PDF de la rúbrica oficial.",
+    version="2.2.0",
 )
 
 app.add_middleware(
@@ -264,7 +267,6 @@ app.add_middleware(
 )
 
 
-# Garantiza que cualquier error inesperado devuelva JSON y nunca una página HTML
 @app.exception_handler(Exception)
 async def manejador_excepciones_global(request: Request, exc: Exception):
     return JSONResponse(
@@ -276,13 +278,13 @@ async def manejador_excepciones_global(request: Request, exc: Exception):
 @app.post("/api/v1/evaluar", response_model=DictamenRubrica)
 async def evaluar_entrega_endpoint(
     rubrica_pdf: UploadFile = File(..., description="PDF oficial de la rúbrica del profesor"),
-    entregable: Optional[UploadFile] = File(
+    entregables: Optional[list[UploadFile]] = File(
         None,
-        description="(Opcional) Sube tu reporte o código en formato .pdf, .docx, .zip o script suelto"
+        description="(Opcional) Sube uno o varios archivos (.pdf, .docx, .zip o scripts)"
     ),
     github_url: Optional[str] = Form(
         None,
-        description="(Opcional) Pega la URL de tu repositorio de GitHub (ej. https://github.com/usuario/repo)"
+        description="(Opcional) Pega la URL de tu repositorio de GitHub"
     ),
 ):
     try:
@@ -298,26 +300,30 @@ async def evaluar_entrega_endpoint(
         if not (rubrica_pdf.filename or "").lower().endswith(".pdf"):
             raise HTTPException(status_code=400, detail="El archivo en 'rubrica_pdf' debe tener extensión .pdf")
 
-        # 3. Comprobar que el usuario haya enviado al menos un archivo entregable o un link de GitHub
-        tiene_archivo = entregable is not None and bool(entregable.filename)
+        # 3. Filtrar archivos válidos subidos en la lista
+        archivos_validos = [f for f in (entregables or []) if f is not None and bool(f.filename)]
+        tiene_archivos = len(archivos_validos) > 0
         tiene_url = github_url is not None and bool(github_url.strip())
 
-        if not tiene_archivo and not tiene_url:
+        if not tiene_archivos and not tiene_url:
             raise HTTPException(
                 status_code=400,
-                detail="Debes proporcionar al menos un archivo en 'entregable' o una URL en 'github_url'."
+                detail="Debes subir al menos un archivo entregable o pegar una URL de GitHub."
             )
 
         # 4. Construir la lista de elementos que revisará Gemini
         bytes_rubrica = await rubrica_pdf.read()
         elementos_para_gemini: list = [
-            types.Part.from_bytes(data=bytes_rubrica, mime_type="application/pdf")
+            "=== DOCUMENTO BASE: RÚBRICA OFICIAL DE EVALUACIÓN (PDF) ===",
+            types.Part.from_bytes(data=bytes_rubrica, mime_type="application/pdf"),
         ]
 
-        if tiene_archivo and entregable is not None:
-            contenido_archivo = await preparar_entregable(entregable)
-            elementos_para_gemini.append(contenido_archivo)
+        # Agregar todos los archivos subidos por el estudiante
+        for idx, archivo in enumerate(archivos_validos, start=1):
+            partes_archivo = await preparar_entregable(archivo, indice=idx)
+            elementos_para_gemini.extend(partes_archivo)
 
+        # Agregar el repositorio de GitHub si también se proporcionó
         if tiene_url and github_url is not None:
             contenido_repo = await descargar_repo_github_en_memoria(github_url)
             elementos_para_gemini.append(contenido_repo)
@@ -325,11 +331,12 @@ async def evaluar_entrega_endpoint(
         instrucciones = (
             "Actúa como un profesor universitario estricto de Ingeniería de Software. "
             "El primer documento adjunto es la RÚBRICA OFICIAL DE EVALUACIÓN en PDF. "
-            "Los elementos siguientes constituyen la ENTREGA DEL ESTUDIANTE (documento, código o ambos).\n\n"
+            "Todos los archivos siguientes (uno o varios documentos PDF, Word, ZIP o repositorio de GitHub) "
+            "forman en conjunto la ENTREGA COMPLETA DEL ESTUDIANTE para la misma actividad.\n\n"
             "Tu tarea:\n"
             "1. Identifica cada criterio y su puntaje en la rúbrica oficial.\n"
-            "2. Evalúa rigurosamente si la entrega cumple con la arquitectura, endpoints, pruebas, "
-            "reglas de negocio, profundidad teórica o formato APA 7 solicitados.\n"
+            "2. Evalúa de forma integral todos los archivos entregados (si un requerimiento está en el "
+            "primer archivo y otro requerimiento está en el segundo archivo o repositorio, tómalos en cuenta juntos).\n"
             "3. Señala exactamente qué archivos o secciones cumplen y qué debe corregir el alumno "
             "para alcanzar el 100% de la calificación."
         )
@@ -352,7 +359,6 @@ async def evaluar_entrega_endpoint(
                 config=config_generacion,
             )
         except Exception as err_modelo:
-            # Si el nombre del modelo en .env no está disponible en la cuenta, usa gemini-2.5-flash automáticamente
             if modelo_preferido != "gemini-2.5-flash":
                 response = await client.aio.models.generate_content(
                     model="gemini-2.5-flash",
@@ -373,7 +379,6 @@ async def evaluar_entrega_endpoint(
         )
 
 
-# Sirve tu interfaz index.html cuando entras a la raíz del servidor (local o Render)
 @app.get("/", include_in_schema=False)
 async def servir_frontend():
     ruta_html = BASE_DIR / "index.html"
